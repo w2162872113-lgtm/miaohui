@@ -57,7 +57,7 @@ export class LocalProvider implements ProviderAdapter {
         return
       }
 
-      const debugDir = path.join(os.tmpdir(), 'sightflow-desktop-agent', 'provider-inputs')
+      const debugDir = path.join(os.tmpdir(), 'miaohui', 'provider-inputs')
       await mkdir(debugDir, { recursive: true })
 
       const stamp = this.createTimestamp()

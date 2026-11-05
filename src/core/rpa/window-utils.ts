@@ -250,7 +250,7 @@ export async function getWindowObstruction(
   for (const w of windows) {
     if (w === target) break // 目标窗口之后的都在它下面
     if (!w?.bounds) continue
-    if (w.owner?.processId === process.pid) continue // SightFlow 自己
+    if (w.owner?.processId === process.pid) continue // 本程序自己的窗口
     if (SYSTEM_OVERLAY_OWNERS.has(w.owner?.name)) continue // 程序坞、菜单栏、通知等系统层
     if (w.owner?.processId && w.owner.processId === target.owner?.processId) continue // 企业微信自己的弹窗/资料卡
     if (w.bounds.width < 80 || w.bounds.height < 80) continue

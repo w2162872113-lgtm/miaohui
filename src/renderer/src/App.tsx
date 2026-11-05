@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { t } from './i18n'
-import logoUrl from './assets/logo.png'
+import logoUrl from './assets/logo.svg'
 import MemoryWindow from './MemoryWindow'
 import './index.css'
 
@@ -285,7 +285,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <img src={logoUrl} alt="SightFlow" className="app-logo" />
+        <img src={logoUrl} alt="MiaoHui" className="app-logo" />
       </header>
 
       <div className="app-content">
@@ -650,7 +650,7 @@ function SettingsWindow(): React.JSX.Element {
     <div className="settings-shell">
       <aside className="settings-sidebar">
         <div className="settings-sidebar-brand">
-          <img src={logoUrl} alt="SightFlow" className="app-logo" />
+          <img src={logoUrl} alt="MiaoHui" className="app-logo" />
           <span>设置</span>
         </div>
         <button

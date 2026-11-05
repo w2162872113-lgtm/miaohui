@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 40" width="168" height="40">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <!-- 图标：圆角方块 + 对话气泡 + 闪电（秒回） -->
+  <rect x="0" y="0" width="40" height="40" rx="10" fill="url(#g)"/>
+  <path d="M11 11h18a4 4 0 0 1 4 4v9a4 4 0 0 1-4 4h-9l-6 5v-5h-3a4 4 0 0 1-4-4v-9a4 4 0 0 1 4-4z" fill="#ffffff"/>
+  <path d="M22 13.5l-6 8h4.2l-1.6 6 6.2-8.2h-4.3z" fill="#059669"/>
+  <!-- 文字 -->
+  <text x="50" y="27.5" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#f5f5f7" letter-spacing="0.2">MiaoHui</text>
+  <text x="137" y="27" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13" font-weight="600" fill="#34d399">秒回</text>
+</svg>
