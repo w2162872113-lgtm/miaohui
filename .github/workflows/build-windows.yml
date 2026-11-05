@@ -1,6 +1,8 @@
-# 在 GitHub 提供的 Windows 服务器上打包 SightFlow 安装包（.exe）
+# 在 GitHub 提供的 Windows 服务器上打包 MiaoHui（秒回）安装包（.exe）
 # 触发方式：推送到 main 分支，或在 GitHub 网页 Actions 页面手动点 "Run workflow"
-# 产物：Actions 运行详情页底部的 "SightFlow-Windows-安装包" 下载
+# 产物：
+#   - 免登录固定下载链接：https://github.com/<owner>/<repo>/releases/latest/download/MiaoHui-Setup.exe
+#   - Actions 运行详情页底部的 "MiaoHui-Windows-安装包"（需登录）
 
 name: Build Windows Installer
 
@@ -8,6 +10,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write # 允许把安装包发布到 Releases（免登录下载）
 
 jobs:
   build-windows:
@@ -44,7 +49,25 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: SightFlow-Windows-安装包
+          name: MiaoHui-Windows-安装包
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 30
+
+      # 发布到固定的 Release，公开仓库无需登录即可下载
+      - name: Publish to Release (免登录下载)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = Get-ChildItem dist\MiaoHui-Setup-*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist\MiaoHui-Setup.exe
+          $tag = "windows-latest"
+          $notes = "MiaoHui 秒回 Windows 安装包（自动构建）`n`n提交: ${{ github.sha }}`n构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm') UTC"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag dist\MiaoHui-Setup.exe --title "MiaoHui 秒回 Windows 安装包" --notes $notes --latest
+          } else {
+            gh release upload $tag dist\MiaoHui-Setup.exe --clobber
+            gh release edit $tag --notes $notes --latest
+          }

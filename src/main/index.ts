@@ -42,9 +42,13 @@ import { TraceStepInput } from '../core/trace/trace-types'
 import {
   KnowledgeBase,
   ReplyRules,
+  ReplyStyle,
   DEFAULT_REPLY_RULES,
+  DEFAULT_REPLY_STYLE,
+  buildStylePrompt,
   normalizeKnowledge,
-  normalizeReplyRules
+  normalizeReplyRules,
+  normalizeReplyStyle
 } from '../core/reply-rules'
 import { ExperienceStore, NewExperienceCard } from '../core/memory/experience-store'
 import { induceCardsFromSession } from '../core/memory/learn-from-session'
@@ -79,6 +83,8 @@ interface AppSettings {
   replyRules: ReplyRules
   /** 企业知识库（对外资料） */
   knowledge: KnowledgeBase
+  /** 回复风格（语气） */
+  replyStyle: ReplyStyle
 }
 
 type ProviderConfigFieldType = 'text' | 'password' | 'url' | 'select' | 'textarea'
@@ -146,7 +152,8 @@ const settingsStore = new StoreClass({
     defaultCaptureStrategy: 'auto',
     capture: {},
     replyRules: DEFAULT_REPLY_RULES,
-    knowledge: { text: '' }
+    knowledge: { text: '' },
+    replyStyle: DEFAULT_REPLY_STYLE
   }
 })
 
@@ -493,7 +500,8 @@ app.whenReady().then(async () => {
         ...(data.capture || {})
       },
       replyRules: data.replyRules ? normalizeReplyRules(data.replyRules) : current.replyRules,
-      knowledge: data.knowledge ? normalizeKnowledge(data.knowledge) : current.knowledge
+      knowledge: data.knowledge ? normalizeKnowledge(data.knowledge) : current.knowledge,
+      replyStyle: data.replyStyle ? normalizeReplyStyle(data.replyStyle) : current.replyStyle
     } satisfies AppSettings
 
     settingsStore.set(next as any)
@@ -708,6 +716,45 @@ app.whenReady().then(async () => {
     })
     return client.testConnection()
   })
+
+  // ── 回复风格：设置页"试一下"（不截图，用文字模拟客户消息，走与正式回复相同的提示词） ──
+  ipcMain.handle(
+    'style:preview',
+    async (_event, args: { message: string; replyStyle?: ReplyStyle }) => {
+      try {
+        const settings = normalizeSettings(settingsStore.store)
+        if (!settings.vision.apiKey) {
+          return { success: false, error: '请先在「基础配置」填写 API Key' }
+        }
+        const message = String(args?.message || '').trim()
+        if (!message) return { success: false, error: '请输入一句客户消息' }
+
+        const style = normalizeReplyStyle(args?.replyStyle ?? settings.replyStyle)
+        const { provider } = await loadBuiltinDoubaoProvider({
+          ...settings.chatProvider.config,
+          apiKey: settings.vision.apiKey,
+          model: settings.vision.model
+        })
+        let reply = ''
+        let skipped = false
+        for await (const event of provider.run({
+          screenshot: '',
+          appType: settings.appType,
+          previewText: message,
+          style: buildStylePrompt(style),
+          ...(settings.knowledge.text.trim() ? { knowledge: settings.knowledge.text } : {})
+        })) {
+          if (event.type === 'reply_text') reply = event.content
+          if (event.type === 'skip') skipped = true
+          if (event.type === 'error') return { success: false, error: event.error }
+        }
+        if (!reply && skipped) return { success: true, reply: '（模型判断这条无需回复）' }
+        return { success: true, reply }
+      } catch (error: any) {
+        return { success: false, error: error?.message || String(error) }
+      }
+    }
+  )
 
   // ── Capture / 框选向导 IPC ──
 
@@ -931,6 +978,7 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
       onTrace,
       getMemoryCards: () => getExperienceStore().getActiveCardBriefs(),
       getKnowledge: () => normalizeSettings(settingsStore.store).knowledge.text,
+      getStylePrompt: () => buildStylePrompt(normalizeSettings(settingsStore.store).replyStyle),
       onSessionEnd: () => recorder.endSession()
     })
 
@@ -1174,7 +1222,8 @@ function normalizeSettings(raw: any): AppSettings {
     defaultCaptureStrategy: coerceStrategy(raw?.defaultCaptureStrategy, 'auto'),
     capture: normalizeCapture(raw?.capture),
     replyRules: normalizeReplyRules(raw?.replyRules),
-    knowledge: normalizeKnowledge(raw?.knowledge)
+    knowledge: normalizeKnowledge(raw?.knowledge),
+    replyStyle: normalizeReplyStyle(raw?.replyStyle)
   }
 }
 

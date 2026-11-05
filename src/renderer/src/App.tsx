@@ -11,7 +11,7 @@ interface LogEntry {
 }
 
 type EngineStatus = 'idle' | 'running' | 'error'
-type SettingsSection = 'base' | 'agent' | 'knowledge' | 'rules'
+type SettingsSection = 'base' | 'agent' | 'knowledge' | 'style' | 'rules'
 type AppType = 'wechat' | 'wework' | 'dingtalk' | 'lark' | 'slack' | 'telegram' | 'generic'
 
 type CaptureStrategy = 'auto' | 'vlm' | 'box-select'
@@ -137,7 +137,49 @@ interface AppSettings {
   capture: Partial<Record<AppType, PerAppCapture>>
   replyRules?: ReplyRulesSettings
   knowledge?: { text: string }
+  replyStyle?: ReplyStyleSettings
 }
+
+type StylePreset = 'natural' | 'professional' | 'concise' | 'sales' | 'custom'
+
+interface ReplyStyleSettings {
+  preset: StylePreset
+  custom: string
+  examples: string
+}
+
+const STYLE_OPTIONS: Array<{ value: StylePreset; label: string; desc: string; sample: string }> = [
+  {
+    value: 'natural',
+    label: '真人随和',
+    desc: '像靠谱的真人员工，口语化、直接',
+    sample: '基础班1980，进阶班3980。你现在大概什么基础？我帮你看看哪个合适'
+  },
+  {
+    value: 'professional',
+    label: '专业顾问',
+    desc: '用“您”，有条理、稳重',
+    sample: '目前有两个班型：基础班 1980 元，进阶班 3980 元。您可以说下目前的情况，我帮您推荐。'
+  },
+  {
+    value: 'concise',
+    label: '简洁高效',
+    desc: '一句话说清，不客套',
+    sample: '基础班1980，进阶班3980'
+  },
+  {
+    value: 'sales',
+    label: '热情销售',
+    desc: '答完会引导下一步（优惠只说知识库里有的）',
+    sample: '基础班1980，进阶班3980，这周报名还送一次一对一诊断，你想先了解哪个？'
+  },
+  {
+    value: 'custom',
+    label: '自定义',
+    desc: '用下面的描述自己定义语气',
+    sample: '按你写的语气描述来回复'
+  }
+]
 
 type GroupPolicy = 'never' | 'mention' | 'always'
 
@@ -672,6 +714,12 @@ function SettingsWindow(): React.JSX.Element {
           知识库
         </button>
         <button
+          className={`settings-nav-item ${section === 'style' ? 'active' : ''}`}
+          onClick={() => setSection('style')}
+        >
+          回复风格
+        </button>
+        <button
           className={`settings-nav-item ${section === 'rules' ? 'active' : ''}`}
           onClick={() => setSection('rules')}
         >
@@ -686,6 +734,8 @@ function SettingsWindow(): React.JSX.Element {
           <AgentPanel />
         ) : section === 'knowledge' ? (
           <KnowledgePanel />
+        ) : section === 'style' ? (
+          <ReplyStylePanel />
         ) : (
           <ReplyRulesPanel />
         )}
@@ -889,6 +939,176 @@ function KnowledgePanel(): React.JSX.Element {
             {saving ? '保存中…' : '保存知识库'}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function ReplyStylePanel(): React.JSX.Element {
+  const [preset, setPreset] = useState<StylePreset>('natural')
+  const [custom, setCustom] = useState('')
+  const [examples, setExamples] = useState('')
+  const [testMessage, setTestMessage] = useState('你们这个课多少钱？')
+  const [testing, setTesting] = useState(false)
+  const [testReply, setTestReply] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      const settings = (await window.electron?.invoke('settings:getAll')) as AppSettings | undefined
+      const style = settings?.replyStyle
+      if (style) {
+        setPreset(style.preset || 'natural')
+        setCustom(style.custom || '')
+        setExamples(style.examples || '')
+      }
+    })()
+  }, [])
+
+  const current = (): ReplyStyleSettings => ({ preset, custom, examples })
+
+  const handleSave = useCallback(async () => {
+    await window.electron?.invoke('settings:set', { replyStyle: { preset, custom, examples } })
+    showToast('回复风格已保存，下一条回复起生效', 'success')
+  }, [preset, custom, examples])
+
+  const handleTest = useCallback(async () => {
+    setTesting(true)
+    setTestReply('')
+    try {
+      const result = (await window.electron?.invoke('style:preview', {
+        message: testMessage,
+        replyStyle: current()
+      })) as { success: boolean; reply?: string; error?: string } | undefined
+      if (result?.success) {
+        setTestReply(result.reply || '（没有生成回复）')
+      } else {
+        showToast(`试一下失败：${result?.error || '未知错误'}`, 'error')
+      }
+    } finally {
+      setTesting(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [testMessage, preset, custom, examples])
+
+  return (
+    <div className="settings-page slide-up">
+      <div className="settings-page-header">
+        <div>
+          <h1>回复风格</h1>
+          <p>决定回复的语气。所有风格都会自动避免“亲”“好的呢”这类客服套话和 AI 腔。</p>
+        </div>
+      </div>
+
+      <div className="card base-settings-card">
+        <div className="card-title">选择语气</div>
+        <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+          {STYLE_OPTIONS.map((opt) => {
+            const active = preset === opt.value
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setPreset(opt.value)}
+                style={{
+                  textAlign: 'left',
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  border: `1px solid ${active ? 'var(--accent)' : 'rgba(255,255,255,0.08)'}`,
+                  background: active ? 'var(--accent-subtle)' : 'rgba(255,255,255,0.02)',
+                  color: 'inherit'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: 13,
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0,
+                      color: active ? 'var(--accent-hover)' : undefined
+                    }}
+                  >
+                    {opt.label}
+                  </span>
+                  <span style={{ fontSize: 11, opacity: 0.6 }}>{opt.desc}</span>
+                </div>
+                {opt.value !== 'custom' ? (
+                  <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>例：{opt.sample}</div>
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">{preset === 'custom' ? '语气描述' : '补充要求（可选）'}</label>
+          <textarea
+            className="form-input"
+            rows={3}
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            placeholder={
+              preset === 'custom'
+                ? '例如：像一个30岁左右的女老师，说话干脆利落，偶尔用一个emoji，称呼客户“同学”'
+                : '例如：称呼客户为“老板”；结尾不用句号'
+            }
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">我的说话样例（推荐，去 AI 味最有效）</label>
+          <textarea
+            className="form-input"
+            rows={6}
+            value={examples}
+            onChange={(e) => setExamples(e.target.value)}
+            placeholder={
+              '每行一条，粘贴 5～10 条你平时真实发给客户的回复，例如：\n可以的，明天上午10点前给你发过去\n这个不贵，1980一期，含3个月答疑\n收到 我看下哈'
+            }
+          />
+          <div className="form-hint">会模仿这些样例的用词、长短和标点，但不会照抄内容。</div>
+        </div>
+
+        <button className="btn btn-primary" onClick={handleSave} style={{ width: '100%' }}>
+          保存回复风格
+        </button>
+      </div>
+
+      <div className="card base-settings-card" style={{ marginTop: 14 }}>
+        <div className="card-title">试一下</div>
+        <div className="form-hint" style={{ marginBottom: 8 }}>
+          输入一句客户可能发的话，用上面<strong>当前（未保存也可以）</strong>的风格和知识库生成回复，不会发到企业微信。
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="form-input"
+            value={testMessage}
+            onChange={(e) => setTestMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !testing) void handleTest()
+            }}
+            placeholder="例如：你们周末上课吗"
+          />
+          <button className="btn btn-secondary" onClick={handleTest} disabled={testing || !testMessage.trim()}>
+            {testing ? '生成中…' : '试一下'}
+          </button>
+        </div>
+        {testReply ? (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'rgba(59,130,246,0.18)',
+              fontSize: 13,
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap'
+            }}
+          >
+            {testReply}
+          </div>
+        ) : null}
       </div>
     </div>
   )

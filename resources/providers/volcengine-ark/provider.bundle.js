@@ -19,11 +19,17 @@ const DEFAULT_PROMPT = `你是一个微信/企业微信自动回复助手。你�
 4. 只有以下情况输出 [SKIP]：最后一条是"我"发的；最后一条是系统消息、群公告、红包、转账；截图里看不到任何聊天内容
 5. 不要重复自己上一条已经说过的话
 
-## 语气和分寸
-你代表企业对外沟通：语气友好、专业、有分寸。不要调情、撒娇、开过火的玩笑；不要替公司承诺请客、送礼、打折、退款等没有依据的事情；对方辱骂或说脏话时不要跟着骂，礼貌简短回应即可。
+## 分寸
+你代表企业对外沟通。不要调情、撒娇、开过火的玩笑；不要替公司承诺请客、送礼、打折、退款等没有依据的事情；对方辱骂或说脏话时不要跟着骂，简短回应即可。
 
 ## 输出要求
-只输出要发送的回复文字，不要解释，不要加引号。回复自然、口语化，像真人对话，一般不超过 60 字。`
+只输出要发送的回复文字，不要解释，不要加引号。`
+
+// 宿主没有传回复风格时的兜底（旧版本宿主 / 第三方调用）
+const FALLBACK_STYLE = `
+
+## 语气
+像真人在微信上聊天，口语化、简短自然，回复长短跟着客户走，不说"亲""好的呢"等客服套话，语气词和"～"不要堆。`
 
 export const manifest = {
   id: 'volcengine-ark',
@@ -35,7 +41,8 @@ export function createProvider(context) {
 
   return {
     async *run(input) {
-      if (!input || !input.screenshot) {
+      const previewText = input && typeof input.previewText === 'string' ? input.previewText.trim() : ''
+      if (!input || (!input.screenshot && !previewText)) {
         yield { type: 'skip' }
         return
       }
@@ -62,11 +69,13 @@ export function createProvider(context) {
       try {
         const reply = await requestReply({
           screenshot: input.screenshot,
+          previewText,
           apiKey,
           model: providerConfig.model || DEFAULT_MODEL,
           systemPrompt:
             (providerConfig.systemPrompt || DEFAULT_PROMPT) +
-            (input.allowWait ? TYPING_SECTION : '') +
+            (typeof input.style === 'string' && input.style.trim() ? input.style : FALLBACK_STYLE) +
+            (input.allowWait && !previewText ? TYPING_SECTION : '') +
             chatSection +
             knowledgeSection +
             memorySection
@@ -93,18 +102,18 @@ export function createProvider(context) {
   }
 }
 
-async function requestReply({ screenshot, apiKey, model, systemPrompt }) {
+async function requestReply({ screenshot, previewText, apiKey, model, systemPrompt }) {
+  const userContent = previewText
+    ? `（这是回复风格测试，没有截图）客户刚发来一条消息："${previewText}"\n请直接给出你要发送的回复。`
+    : [
+        { type: 'image_url', image_url: { url: normalizeImageUrl(screenshot) } },
+        { type: 'text', text: '请根据截图中微信聊天窗口的最新消息进行回复。' }
+      ]
   const body = {
     model,
     messages: [
       { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: normalizeImageUrl(screenshot) } },
-          { type: 'text', text: '请根据截图中微信聊天窗口的最新消息进行回复。' }
-        ]
-      }
+      { role: 'user', content: userContent }
     ],
     thinking: { type: 'disabled' },
     stream: false

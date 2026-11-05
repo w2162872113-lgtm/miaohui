@@ -10,6 +10,10 @@ export interface ProviderInput {
   memoryCards?: MemoryCardBrief[]
   /** 企业知识库全文。Provider 回答业务问题时应以此为准，不得编造。 */
   knowledge?: string
+  /** 回复风格（语气 + 去 AI 味规则 + 说话样例）拼好的 system prompt 片段 */
+  style?: string
+  /** 设置页"试一下"：不截图，直接把这段文字当作客户发来的最新消息 */
+  previewText?: string
   /** 为 true 时，Provider 看到"对方正在输入"可返回 wait 事件，宿主会稍后重新截图 */
   allowWait?: boolean
   /** 当前会话信息（由宿主识别标题栏得到），供 Provider 调整回复策略 */
