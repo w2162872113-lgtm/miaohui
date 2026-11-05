@@ -2,11 +2,11 @@
   "name": "miaohui",
   "productName": "MiaoHui",
   "version": "1.0.0",
-  "description": "MiaoHui 秒回 - 企业微信智能自动回复助手（基于 SightFlow Desktop Agent，Apache-2.0）",
+  "description": "MiaoHui 秒回 - 企业微信智能自动回复助手",
   "main": "./out/main/index.js",
   "author": "sightflow-dev",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/w2162872113-lgtm/sightflow-wecom",
+  "homepage": "https://github.com/w2162872113-lgtm/miaohui",
   "overrides": {
     "@hurdlegroup/robotjs": {
       "node-addon-api": "^8.7.0"
