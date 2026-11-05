@@ -11,8 +11,13 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    # 固定用 windows-2022（自带 VS 2022）。windows-latest 已升级到 VS 2026，
+    # 项目依赖 node-window-manager 自带的旧版 node-gyp 识别不了，会编译失败。
+    runs-on: windows-2022
     timeout-minutes: 40
+    env:
+      GYP_MSVS_VERSION: '2022'
+      npm_config_msvs_version: '2022'
 
     steps:
       - name: Checkout
