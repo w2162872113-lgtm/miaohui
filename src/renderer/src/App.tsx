@@ -11,7 +11,7 @@ interface LogEntry {
 }
 
 type EngineStatus = 'idle' | 'running' | 'error'
-type SettingsSection = 'base' | 'agent'
+type SettingsSection = 'base' | 'agent' | 'knowledge' | 'rules'
 type AppType = 'wechat' | 'wework' | 'dingtalk' | 'lark' | 'slack' | 'telegram' | 'generic'
 
 type CaptureStrategy = 'auto' | 'vlm' | 'box-select'
@@ -126,6 +126,7 @@ interface AppSettings {
   appType: AppType
   vision: {
     apiKey: string
+    model?: string
   }
   chatProvider: {
     manifestUrl: string
@@ -134,7 +135,20 @@ interface AppSettings {
   }
   defaultCaptureStrategy: CaptureStrategy
   capture: Partial<Record<AppType, PerAppCapture>>
+  replyRules?: ReplyRulesSettings
+  knowledge?: { text: string }
 }
+
+type GroupPolicy = 'never' | 'mention' | 'always'
+
+interface ReplyRulesSettings {
+  groupPolicy: GroupPolicy
+  myName: string
+  blocklist: string[]
+  allowlist: string[]
+}
+
+const KNOWLEDGE_MAX_CHARS = 100_000
 
 const BUILTIN_PROVIDER_CATALOG: ProviderCatalogItem[] = [
   {
@@ -155,11 +169,12 @@ const BUILTIN_PROVIDER_CATALOG: ProviderCatalogItem[] = [
         },
         {
           key: 'model',
-          label: '模型',
+          label: '模型（跟随基础配置）',
           type: 'text',
-          required: true,
+          required: false,
           readonly: true,
-          defaultValue: 'doubao-seed-2-0-lite-260428'
+          hint: '内置豆包智能体使用「基础配置」里填写的模型，在那里修改即可',
+          defaultValue: 'doubao-seed-2-1-lite-260915'
         },
         {
           key: 'baseURL',
@@ -650,17 +665,40 @@ function SettingsWindow(): React.JSX.Element {
         >
           智能体
         </button>
+        <button
+          className={`settings-nav-item ${section === 'knowledge' ? 'active' : ''}`}
+          onClick={() => setSection('knowledge')}
+        >
+          知识库
+        </button>
+        <button
+          className={`settings-nav-item ${section === 'rules' ? 'active' : ''}`}
+          onClick={() => setSection('rules')}
+        >
+          回复规则
+        </button>
       </aside>
 
       <main className="settings-main">
-        {section === 'base' ? <SettingsPanel /> : <AgentPanel />}
+        {section === 'base' ? (
+          <SettingsPanel />
+        ) : section === 'agent' ? (
+          <AgentPanel />
+        ) : section === 'knowledge' ? (
+          <KnowledgePanel />
+        ) : (
+          <ReplyRulesPanel />
+        )}
       </main>
     </div>
   )
 }
 
+const DEFAULT_ARK_MODEL = 'doubao-seed-2-1-lite-260915'
+
 function SettingsPanel() {
   const [visionApiKey, setVisionApiKey] = useState('')
+  const [visionModel, setVisionModel] = useState(DEFAULT_ARK_MODEL)
   const [testing, setTesting] = useState(false)
 
   useEffect(() => {
@@ -668,6 +706,7 @@ function SettingsPanel() {
       const settings = (await window.electron?.invoke('settings:getAll')) as AppSettings | undefined
       if (settings) {
         setVisionApiKey(settings.vision?.apiKey || '')
+        setVisionModel(settings.vision?.model || DEFAULT_ARK_MODEL)
       }
     }
 
@@ -675,24 +714,26 @@ function SettingsPanel() {
   }, [])
 
   const handleSaveVision = useCallback(async () => {
+    const model = visionModel.trim() || DEFAULT_ARK_MODEL
     const payload: Partial<AppSettings> = {
-      vision: { apiKey: visionApiKey }
+      vision: { apiKey: visionApiKey, model }
     }
     await window.electron?.invoke('settings:set', payload)
     await window.electron?.invoke('engine:updateConfig', {
       ...((await window.electron?.invoke('settings:getAll')) as AppSettings),
       ...payload,
-      vision: { apiKey: visionApiKey }
+      vision: { apiKey: visionApiKey, model }
     })
     showToast(t('settings.saved'), 'success')
-  }, [visionApiKey])
+  }, [visionApiKey, visionModel])
 
   const handleTestConnection = useCallback(async () => {
     if (!visionApiKey) return
     setTesting(true)
     try {
       const result = await window.electron?.invoke('engine:testConnection', {
-        apiKey: visionApiKey
+        apiKey: visionApiKey,
+        model: visionModel.trim()
       })
       if (result?.success) {
         showToast(t('settings.testConnection.success'), 'success')
@@ -704,7 +745,7 @@ function SettingsPanel() {
     } finally {
       setTesting(false)
     }
-  }, [visionApiKey])
+  }, [visionApiKey, visionModel])
 
   return (
     <div className="settings-page slide-up">
@@ -733,7 +774,16 @@ function SettingsPanel() {
 
         <div className="form-group">
           <label className="form-label">{t('settings.visionModel')}</label>
-          <input className="form-input" value="doubao-seed-2-0-lite-260215" disabled />
+          <input
+            className="form-input"
+            value={visionModel}
+            onChange={(e) => setVisionModel(e.target.value)}
+            placeholder={DEFAULT_ARK_MODEL}
+            autoComplete="off"
+          />
+          <div className="form-hint">
+            填火山方舟控制台「模型广场 → 模型详情」里的 Model ID，必须是你账号已开通的模型（需支持图片理解，推荐 Doubao-Seed-2.1-lite）。识别界面和生成回复共用这一个模型。
+          </div>
         </div>
 
         <div className="form-group">
@@ -753,6 +803,193 @@ function SettingsPanel() {
             {t('settings.saveVision')}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function KnowledgePanel(): React.JSX.Element {
+  const [text, setText] = useState('')
+  const [saving, setSaving] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      const settings = (await window.electron?.invoke('settings:getAll')) as AppSettings | undefined
+      setText(settings?.knowledge?.text || '')
+    })()
+  }, [])
+
+  const handleImport = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const parts: string[] = []
+    for (const file of Array.from(files)) {
+      const content = await file.text()
+      parts.push(`# ${file.name}\n${content.trim()}`)
+    }
+    setText((prev) => [prev.trim(), ...parts].filter(Boolean).join('\n\n'))
+    showToast(`已导入 ${files.length} 个文件，记得点保存`, 'success')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [])
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    try {
+      await window.electron?.invoke('settings:set', { knowledge: { text } })
+      showToast('知识库已保存，下一条回复起生效', 'success')
+    } finally {
+      setSaving(false)
+    }
+  }, [text])
+
+  const over = text.length > KNOWLEDGE_MAX_CHARS
+
+  return (
+    <div className="settings-page slide-up">
+      <div className="settings-page-header">
+        <div>
+          <h1>知识库</h1>
+          <p>填写对外可以告诉客户的企业资料。客户问到业务问题时，助手只按这里的内容回答，没有的不会乱编。</p>
+        </div>
+      </div>
+
+      <div className="card base-settings-card">
+        <div className="form-group">
+          <label className="form-label">企业资料</label>
+          <textarea
+            className="form-input"
+            style={{ minHeight: 360, fontSize: 12 }}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={
+              '例如：\n【公司介绍】……\n【课程/产品】名称、内容、适合人群、价格……\n【常见问题】\nQ：怎么报名？\nA：……\n【联系方式 / 营业时间】……'
+            }
+          />
+          <div className="form-hint" style={{ color: over ? 'var(--danger, #f87171)' : undefined }}>
+            {text.length.toLocaleString()} / {KNOWLEDGE_MAX_CHARS.toLocaleString()} 字
+            {over ? '，超出部分不会被使用' : ''}
+            。只放可以对外说的内容，不要放内部价格底线、账号密码等敏感信息。
+          </div>
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.markdown,.csv"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => void handleImport(e.target.files)}
+        />
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()}>
+            导入文件（txt / md / csv）
+          </button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flex: 1 }}>
+            {saving ? '保存中…' : '保存知识库'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReplyRulesPanel(): React.JSX.Element {
+  const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>('never')
+  const [myName, setMyName] = useState('')
+  const [blocklist, setBlocklist] = useState('')
+  const [allowlist, setAllowlist] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      const settings = (await window.electron?.invoke('settings:getAll')) as AppSettings | undefined
+      const rules = settings?.replyRules
+      if (rules) {
+        setGroupPolicy(rules.groupPolicy || 'never')
+        setMyName(rules.myName || '')
+        setBlocklist((rules.blocklist || []).join('\n'))
+        setAllowlist((rules.allowlist || []).join('\n'))
+      }
+    })()
+  }, [])
+
+  const handleSave = useCallback(async () => {
+    const toList = (s: string): string[] =>
+      s
+        .split(/[\n,，]/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    const replyRules: ReplyRulesSettings = {
+      groupPolicy,
+      myName: myName.trim(),
+      blocklist: toList(blocklist),
+      allowlist: toList(allowlist)
+    }
+    await window.electron?.invoke('settings:set', { replyRules })
+    showToast('回复规则已保存，立即生效', 'success')
+  }, [groupPolicy, myName, blocklist, allowlist])
+
+  return (
+    <div className="settings-page slide-up">
+      <div className="settings-page-header">
+        <div>
+          <h1>回复规则</h1>
+          <p>决定哪些会话自动回复、哪些不碰。每次回复前会先识别会话名称，不符合规则的直接跳过。</p>
+        </div>
+      </div>
+
+      <div className="card base-settings-card">
+        <div className="card-title">群聊</div>
+        <div className="form-group">
+          <label className="form-label">群聊消息怎么处理</label>
+          <select
+            className="form-input"
+            value={groupPolicy}
+            onChange={(e) => setGroupPolicy(e.target.value as GroupPolicy)}
+          >
+            <option value="never">不回复任何群聊（推荐）</option>
+            <option value="mention">只在有人 @我 时回复</option>
+            <option value="always">群聊也正常回复</option>
+          </select>
+        </div>
+        {groupPolicy === 'mention' ? (
+          <div className="form-group">
+            <label className="form-label">我在群里的名字</label>
+            <input
+              className="form-input"
+              value={myName}
+              onChange={(e) => setMyName(e.target.value)}
+              placeholder="用于判断别人是否 @ 了我，例如：赵老师"
+            />
+          </div>
+        ) : null}
+
+        <div className="card-title" style={{ marginTop: 18 }}>指定会话</div>
+        <div className="form-group">
+          <label className="form-label">不回复的会话</label>
+          <textarea
+            className="form-input"
+            rows={4}
+            value={blocklist}
+            onChange={(e) => setBlocklist(e.target.value)}
+            placeholder={'每行一个，会话名称包含该词就不回复，例如：\n内部群\n企业微信团队\n张三'}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">只回复这些会话（可选）</label>
+          <textarea
+            className="form-input"
+            rows={3}
+            value={allowlist}
+            onChange={(e) => setAllowlist(e.target.value)}
+            placeholder={'留空 = 所有私聊都回复。\n填了之后，只有名称包含这些词的会话才回复'}
+          />
+          <div className="form-hint">名称按“包含”匹配，不区分大小写。规则保存后立即生效，无需重启引擎。</div>
+        </div>
+
+        <button className="btn btn-primary" onClick={handleSave} style={{ width: '100%' }}>
+          保存回复规则
+        </button>
       </div>
     </div>
   )

@@ -1,0 +1,45 @@
+# 在 GitHub 提供的 Windows 服务器上打包 SightFlow 安装包（.exe）
+# 触发方式：推送到 main 分支，或在 GitHub 网页 Actions 页面手动点 "Run workflow"
+# 产物：Actions 运行详情页底部的 "SightFlow-Windows-安装包" 下载
+
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (含原生模块编译)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build app
+        run: npx electron-vite build
+
+      - name: Package installer (NSIS, x64)
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SightFlow-Windows-安装包
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30

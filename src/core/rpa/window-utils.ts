@@ -217,3 +217,102 @@ export function getWindowInfoSync(appType: AppType): {
     scaleFactor: cached.result.display?.scaleFactor || 1
   }
 }
+
+/**
+ * 检查目标窗口是否被别的窗口挡住（macOS：getOpenWindows 按从前到后的层级返回）。
+ *
+ * 被挡住时截图会截到别的程序，点击/输入也会落到别的程序上，必须暂停。
+ * - 忽略 SightFlow 自己的窗口（同一进程）
+ * - 忽略很小的窗口和只盖住一点点的窗口（如系统通知横幅）
+ * Windows 平台暂不检测，直接返回未遮挡。
+ */
+const SYSTEM_OVERLAY_OWNERS = new Set([
+  'Dock', '程序坞', 'Window Server', 'WindowServer', 'SystemUIServer',
+  'Control Center', '控制中心', 'Notification Center', '通知中心',
+  'NotificationCenter', 'Spotlight', '聚焦', 'TextInputMenuAgent', 'Wallpaper', '墙纸'
+])
+
+export async function getWindowObstruction(
+  appType: AppType
+): Promise<{ obstructed: boolean; by?: string; missing?: boolean }> {
+  if (IS_WINDOWS) return getWindowObstructionWin(appType)
+  if (!IS_MAC) return { obstructed: false }
+  const windows = await getOpenWindowsSafe()
+  if (!windows.length) return { obstructed: false } // 拿不到窗口列表时不阻断
+
+  const target = getWechatWindow(appType, windows)
+  if (!target?.bounds) return { obstructed: true, missing: true }
+
+  const t = target.bounds
+  const targetArea = t.width * t.height
+  const OVERLAP_RATIO = 0.08 // 盖住超过 8% 视为被挡住
+
+  for (const w of windows) {
+    if (w === target) break // 目标窗口之后的都在它下面
+    if (!w?.bounds) continue
+    if (w.owner?.processId === process.pid) continue // SightFlow 自己
+    if (SYSTEM_OVERLAY_OWNERS.has(w.owner?.name)) continue // 程序坞、菜单栏、通知等系统层
+    if (w.owner?.processId && w.owner.processId === target.owner?.processId) continue // 企业微信自己的弹窗/资料卡
+    if (w.bounds.width < 80 || w.bounds.height < 80) continue
+
+    const ox = Math.max(0, Math.min(t.x + t.width, w.bounds.x + w.bounds.width) - Math.max(t.x, w.bounds.x))
+    const oy = Math.max(0, Math.min(t.y + t.height, w.bounds.y + w.bounds.height) - Math.max(t.y, w.bounds.y))
+    if ((ox * oy) / targetArea > OVERLAP_RATIO) {
+      console.log('[window-utils] 目标窗口被遮挡:', {
+        by: w.owner?.name,
+        title: (w.title || '').slice(0, 40),
+        bounds: w.bounds,
+        target: t
+      })
+      return { obstructed: true, by: w.owner?.name || w.title || '其他窗口' }
+    }
+  }
+  return { obstructed: false }
+}
+
+/**
+ * Windows：拿不到完整的窗口层级，退而检查"当前前台窗口"。
+ * 前台窗口一定在最上层；如果它不是企业微信/SightFlow，且盖住了企业微信窗口的一部分，就视为被挡住。
+ */
+async function getWindowObstructionWin(
+  appType: AppType
+): Promise<{ obstructed: boolean; by?: string; missing?: boolean }> {
+  try {
+    const target = (await getWechatWindowInWin(appType)) as any
+    if (!target) return { obstructed: true, missing: true }
+    if (typeof target.isWindow === 'function' && !target.isWindow()) {
+      return { obstructed: true, missing: true }
+    }
+    const t = target.getBounds?.()
+    if (!t?.width || !t?.height) return { obstructed: true, missing: true }
+    // 最小化的窗口在 Windows 上通常坐标为 -32000
+    if ((t.x ?? 0) <= -30000 || (t.y ?? 0) <= -30000) return { obstructed: true, missing: true }
+
+    const { windowManager } = require('node-window-manager')
+    const active = windowManager.getActiveWindow()
+    if (!active) return { obstructed: false }
+    if (active.id === target.id) return { obstructed: false }
+    if (active.processId === process.pid || active.processId === target.processId) {
+      return { obstructed: false }
+    }
+
+    const w = active.getBounds?.()
+    if (!w?.width || !w?.height) return { obstructed: false }
+    const ox = Math.max(0, Math.min(t.x + t.width, w.x + w.width) - Math.max(t.x, w.x))
+    const oy = Math.max(0, Math.min(t.y + t.height, w.y + w.height) - Math.max(t.y, w.y))
+    if ((ox * oy) / (t.width * t.height) > 0.08) {
+      let by = ''
+      try {
+        by = active.getTitle?.() || ''
+      } catch {
+        // ignore
+      }
+      console.log('[window-utils] (Windows) 目标窗口被前台窗口遮挡:', { by, bounds: w, target: t })
+      return { obstructed: true, by: by || '其他窗口' }
+    }
+    return { obstructed: false }
+  } catch (error: any) {
+    console.error('[window-utils] getWindowObstructionWin 失败:', error?.message)
+    return { obstructed: false } // 检测失败不阻断，避免误停
+  }
+}

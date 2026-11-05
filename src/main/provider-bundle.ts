@@ -117,6 +117,7 @@ export class BundleProviderAdapter implements ProviderAdapter {
       case 'reply_text':
         return typeof event.content === 'string'
       case 'skip':
+      case 'wait':
         return true
       case 'error':
         return typeof event.error === 'string'

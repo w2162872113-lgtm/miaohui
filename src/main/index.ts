@@ -39,11 +39,18 @@ import {
   TraceRecorder
 } from '../core/trace/trace-recorder'
 import { TraceStepInput } from '../core/trace/trace-types'
+import {
+  KnowledgeBase,
+  ReplyRules,
+  DEFAULT_REPLY_RULES,
+  normalizeKnowledge,
+  normalizeReplyRules
+} from '../core/reply-rules'
 import { ExperienceStore, NewExperienceCard } from '../core/memory/experience-store'
 import { induceCardsFromSession } from '../core/memory/learn-from-session'
 const StoreClass = typeof Store === 'function' ? Store : ((Store as any).default as typeof Store)
 
-const FIXED_ARK_MODEL = 'doubao-seed-2-0-lite-260215'
+const FIXED_ARK_MODEL = 'doubao-seed-2-1-lite-260915'
 const FIXED_ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 
 interface PerAppCapture {
@@ -56,6 +63,8 @@ interface AppSettings {
   appType: AppType
   vision: {
     apiKey: string
+    /** 火山方舟 Model ID（视觉识别和生成回复共用）。不同账号开通的版本号可能不同。 */
+    model: string
   }
   chatProvider: {
     manifestUrl: string
@@ -66,6 +75,10 @@ interface AppSettings {
   defaultCaptureStrategy: CaptureStrategy
   // 每个 appType 独立保存的策略 + 框选区域
   capture: Partial<Record<AppType, PerAppCapture>>
+  /** 哪些会话回复、哪些不回复 */
+  replyRules: ReplyRules
+  /** 企业知识库（对外资料） */
+  knowledge: KnowledgeBase
 }
 
 type ProviderConfigFieldType = 'text' | 'password' | 'url' | 'select' | 'textarea'
@@ -124,14 +137,16 @@ const settingsStore = new StoreClass({
   defaults: {
     locale: 'zh',
     appType: 'wechat',
-    vision: { apiKey: '' },
+    vision: { apiKey: '', model: FIXED_ARK_MODEL },
     chatProvider: {
       manifestUrl: '',
       installed: null,
       config: {}
     },
     defaultCaptureStrategy: 'auto',
-    capture: {}
+    capture: {},
+    replyRules: DEFAULT_REPLY_RULES,
+    knowledge: { text: '' }
   }
 })
 
@@ -476,7 +491,9 @@ app.whenReady().then(async () => {
       capture: {
         ...current.capture,
         ...(data.capture || {})
-      }
+      },
+      replyRules: data.replyRules ? normalizeReplyRules(data.replyRules) : current.replyRules,
+      knowledge: data.knowledge ? normalizeKnowledge(data.knowledge) : current.knowledge
     } satisfies AppSettings
 
     settingsStore.set(next as any)
@@ -600,7 +617,7 @@ app.whenReady().then(async () => {
 
       const client = new AIClient({
         apiKey,
-        model: FIXED_ARK_MODEL,
+        model: normalizeSettings(settingsStore.store).vision.model,
         baseURL: FIXED_ARK_BASE_URL
       })
       const induced = await induceCardsFromSession(client, data.session, data.steps)
@@ -670,7 +687,7 @@ app.whenReady().then(async () => {
     const settings = normalizeSettings(config || settingsStore.store)
     if (runtimeDevice) {
       // setApiKey 在 BoxSelectDevice 上是 no-op，对 RPADevice 才生效。
-      runtimeDevice.setApiKey(settings.vision.apiKey)
+      runtimeDevice.setApiKey(settings.vision.apiKey, settings.vision.model)
       runtimeDevice.setAppType(settings.appType)
     }
     if (runtime) {
@@ -681,9 +698,12 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('engine:testConnection', async (_event, config) => {
     const apiKey = config?.apiKey || normalizeSettings(settingsStore.store).vision.apiKey
+    const model =
+      (typeof config?.model === 'string' && config.model.trim()) ||
+      normalizeSettings(settingsStore.store).vision.model
     const client = new AIClient({
       apiKey,
-      model: FIXED_ARK_MODEL,
+      model,
       baseURL: FIXED_ARK_BASE_URL
     })
     return client.testConnection()
@@ -818,7 +838,8 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
     if (!settings.chatProvider.installed) {
       const loaded = await loadBuiltinDoubaoProvider({
         ...settings.chatProvider.config,
-        apiKey: settings.vision.apiKey
+        apiKey: settings.vision.apiKey,
+        model: settings.vision.model
       })
       provider = loaded.provider
     } else {
@@ -841,7 +862,7 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
       }
 
       const effectiveConfig = isDoubao
-        ? { ...settings.chatProvider.config, apiKey: settings.vision.apiKey }
+        ? { ...settings.chatProvider.config, apiKey: settings.vision.apiKey, model: settings.vision.model }
         : settings.chatProvider.config
 
       const loaded = await loadInstalledProvider(settings.chatProvider.installed, effectiveConfig)
@@ -877,7 +898,7 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
       appType,
       engineVersion: app.getVersion(),
       providerId: settings.chatProvider.installed?.id ?? BUILTIN_DOUBAO_PROVIDER_ID,
-      model: settings.chatProvider.config?.model || FIXED_ARK_MODEL
+      model: settings.vision.model
     })
 
     const onTrace = (input: TraceStepInput): void => {
@@ -898,7 +919,9 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
       }
     }
 
-    const channel = new GenericChannelSession(device)
+    const channel = new GenericChannelSession(device, {
+      getReplyRules: () => normalizeSettings(settingsStore.store).replyRules
+    })
     runtime = new RuntimeHost({
       appType,
       channel,
@@ -907,6 +930,7 @@ async function startEngineCore(rawConfig?: any): Promise<SkillStartResult> {
       onLog: log,
       onTrace,
       getMemoryCards: () => getExperienceStore().getActiveCardBriefs(),
+      getKnowledge: () => normalizeSettings(settingsStore.store).knowledge.text,
       onSessionEnd: () => recorder.endSession()
     })
 
@@ -1000,7 +1024,7 @@ async function buildDevice(
   if (effective === 'vlm') {
     const rpa = new RPADevice()
     rpa.setAppType(appType)
-    rpa.setApiKey(apiKey)
+    rpa.setApiKey(apiKey, settings.vision.model)
     return { device: rpa, strategy: 'vlm' }
   }
 
@@ -1136,7 +1160,11 @@ function normalizeSettings(raw: any): AppSettings {
     locale: raw?.locale === 'en' ? 'en' : 'zh',
     appType: coerceAppType(raw?.appType),
     vision: {
-      apiKey: raw?.vision?.apiKey || oldApiKey || ''
+      apiKey: raw?.vision?.apiKey || oldApiKey || '',
+      model:
+        typeof raw?.vision?.model === 'string' && raw.vision.model.trim()
+          ? raw.vision.model.trim()
+          : FIXED_ARK_MODEL
     },
     chatProvider: {
       manifestUrl: raw?.chatProvider?.manifestUrl || raw?.providerManifestUrl || '',
@@ -1144,7 +1172,9 @@ function normalizeSettings(raw: any): AppSettings {
       config: rawProviderConfig
     },
     defaultCaptureStrategy: coerceStrategy(raw?.defaultCaptureStrategy, 'auto'),
-    capture: normalizeCapture(raw?.capture)
+    capture: normalizeCapture(raw?.capture),
+    replyRules: normalizeReplyRules(raw?.replyRules),
+    knowledge: normalizeKnowledge(raw?.knowledge)
   }
 }
 

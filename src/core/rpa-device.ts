@@ -7,12 +7,15 @@
 import { DesktopDevice } from './device'
 import { AIClient } from './ai-client'
 import { AppType } from './rpa/types'
-import { BBox } from './rpa/vision-utils'
-import { captureChatMainArea } from './rpa/screenshot-utils'
+import { BBox, bboxToCropBounds } from './rpa/vision-utils'
+import { captureChatMainArea, captureWechatWindow } from './rpa/screenshot-utils'
+import { ChatIdentity } from './reply-rules'
 import { sendReplyAction, activeUnreadByClickAction, clickUnreadContactAction } from './rpa/input-utils'
 import {
   hasUnreadMessage as hasUnreadMessageDetect,
-  isChatContactUnread as isChatContactUnreadDetect
+  isChatContactUnread as isChatContactUnreadDetect,
+  findUnreadContactInList,
+  isContactBadgeCleared as isContactBadgeClearedDetect
 } from './rpa/has-unread'
 import {
   setChatBaseline as setChatBaselineFn,
@@ -27,7 +30,22 @@ import {
   getLayoutCache,
   setLayoutCache
 } from './rpa/vision-utils'
-import { getWechatWindowInfo } from './rpa/window-utils'
+import { getWechatWindowInfo, getWindowInfo, getWindowObstruction } from './rpa/window-utils'
+
+const IDENTIFY_CHAT_PROMPT = `这是微信/企业微信聊天窗口顶部的标题栏截图（可能包含标题下方的一行灰色小字）。
+请识别当前会话的名称，并判断是群聊还是私聊。
+
+群聊的明确特征（至少要有一条）：
+- 标题后面带人数，如"(12)"
+- 标题下方灰色小字提到"群"、"群主"、"成员"、"外部群"等
+- 名称本身含"群"字
+
+私聊的特征：单个人的名字，可能带"@公司名"、"外部"标签，或"部门-姓名"格式（如"交付部-杨老师"是同事私聊，不是群）
+
+没有群聊的明确特征时，一律判为私聊。
+
+只输出一行 JSON，不要任何解释：
+{"name":"会话名称（不含人数括号）","isGroup":false,"groupEvidence":"判为群聊时写出依据原文，否则留空"}`
 
 export class RPADevice implements DesktopDevice {
   private appType: AppType = 'wechat'
@@ -37,9 +55,9 @@ export class RPADevice implements DesktopDevice {
     this.appType = appType
   }
 
-  setApiKey(apiKey: string): void {
+  setApiKey(apiKey: string, model?: string): void {
     if (!apiKey) return
-    this.aiClient = new AIClient({ apiKey })
+    this.aiClient = new AIClient({ apiKey, ...(model ? { model } : {}) })
   }
 
   // ── 生命周期 ──
@@ -196,6 +214,65 @@ export class RPADevice implements DesktopDevice {
       isUnread: result.isUnread || false,
       firstContactCoords: result.firstContact?.coordinates
     }
+  }
+
+  async findUnreadContact(): Promise<{ coordinates: [number, number]; badgeWindowY: number } | null> {
+    if (!this.aiClient) return null
+    return findUnreadContactInList(this.aiClient, this.appType)
+  }
+
+  /**
+   * 读取会话标题栏（聊天记录区上方那一条），识别会话名称和是否群聊。
+   * 只截很小的一条区域，模型调用快、费用低。
+   */
+  async checkObstruction(): Promise<{ obstructed: boolean; by?: string; missing?: boolean }> {
+    return getWindowObstruction(this.appType)
+  }
+
+  async identifyChat(): Promise<ChatIdentity | null> {
+    if (!this.aiClient) return null
+    try {
+      const layout = getLayoutCache(this.appType)
+      const chatBbox = layout?.chatMainArea?.bbox
+      const windowInfo = await getWindowInfo(this.appType, false)
+      if (!chatBbox || !windowInfo?.bounds) return null
+
+      const chat = bboxToCropBounds(chatBbox, windowInfo.bounds)
+      // 标题栏 = 聊天记录区正上方、从窗口顶部到聊天区顶部的横条
+      const header = {
+        x: chat.x,
+        y: 0,
+        width: chat.width,
+        // 多截一点，确保包含标题下方那行灰色小字（群聊会写"外部群""群主"等，是最可靠的群聊依据）
+        height: Math.max(chat.y + 18, 48)
+      }
+      const shot = await captureWechatWindow(this.appType, header)
+      if (!shot.success || !shot.screenshotBase64) return null
+
+      const text = await this.aiClient.detectVision(IDENTIFY_CHAT_PROMPT, shot.screenshotBase64)
+      const match = text.match(/\{[\s\S]*\}/)
+      if (!match) {
+        console.warn('[RPADevice] identifyChat 无法解析:', text.slice(0, 200))
+        return null
+      }
+      const parsed = JSON.parse(match[0])
+      const name = typeof parsed.name === 'string' ? parsed.name.trim() : ''
+      if (!name) return null
+      // 判为群聊必须给出依据，否则按私聊处理（避免把"交付部-杨老师"这类私聊误判成群而漏回）
+      const evidence = typeof parsed.groupEvidence === 'string' ? parsed.groupEvidence.trim() : ''
+      const isGroup = parsed.isGroup === true && (evidence.length > 0 || /群|\(\d+\)|（\d+）/.test(name))
+      const identity: ChatIdentity = { name, isGroup }
+      console.log('[RPADevice] 当前会话:', identity, evidence ? `依据: ${evidence}` : '')
+      return identity
+    } catch (error) {
+      console.error('[RPADevice] identifyChat 失败:', error)
+      return null
+    }
+  }
+
+  async isContactBadgeCleared(badgeWindowY: number): Promise<boolean> {
+    if (!this.aiClient) return false
+    return isContactBadgeClearedDetect(this.aiClient, this.appType, badgeWindowY)
   }
 
   /**

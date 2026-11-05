@@ -68,33 +68,16 @@ export function parseBBoxes(text: string): BBox[] {
   if (!text) return []
   const bboxes: BBox[] = []
 
-  // 1. 先尝试逗号分隔格式（标准格式）
-  let regex = /<bbox>\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*<\/bbox>/gi
+  // 模型输出的分隔符不稳定：逗号、空格、逗号+空格、混用（如 "72,20 242,63"）、中文逗号都见过。
+  // 统一做法：取出 <bbox>…</bbox> 内部，抽出所有数字，恰好 4 个就算有效。
+  const regex = /<bbox>([\s\S]*?)<\/bbox>/gi
   let match: RegExpExecArray | null
 
   while ((match = regex.exec(text)) !== null) {
-    const x1 = Number(match[1])
-    const y1 = Number(match[2])
-    const x2 = Number(match[3])
-    const y2 = Number(match[4])
-    if ([x1, y1, x2, y2].every((v) => Number.isFinite(v))) {
-      bboxes.push([Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)])
-    }
-  }
-
-  // 2. 如果没有找到逗号分隔的格式，尝试空格分隔
-  if (bboxes.length === 0) {
-    regex = /<bbox>\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*<\/bbox>/gi
-
-    while ((match = regex.exec(text)) !== null) {
-      const x1 = Number(match[1])
-      const y1 = Number(match[2])
-      const x2 = Number(match[3])
-      const y2 = Number(match[4])
-      if ([x1, y1, x2, y2].every((v) => Number.isFinite(v))) {
-        bboxes.push([Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)])
-      }
-    }
+    const nums = (match[1].match(/\d+(?:\.\d+)?/g) || []).map(Number)
+    if (nums.length !== 4 || !nums.every((v) => Number.isFinite(v))) continue
+    const [x1, y1, x2, y2] = nums
+    bboxes.push([Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)])
   }
 
   return bboxes
@@ -431,7 +414,7 @@ const LAYOUT_DETECT_PROMPTS: Record<'wechat' | 'wework', { prompt: string; targe
     targets: ['【搜索输入框】', '【对话窗口header区域】', '【聊天记录区】']
   },
   wework: {
-    prompt: `你是一个企业微信布局解析专家。企业微信Mac客户端界面是三栏式布局：
+    prompt: `你是一个企业微信布局解析专家。企业微信桌面客户端（Windows/Mac）界面是三栏式布局：
 
 - 左侧导航栏：顶部用户头像，功能菜单（消息/通讯录/邮件/日程/工作台）
 - 中间消息列表：顶部搜索框+加号，下面是消息项

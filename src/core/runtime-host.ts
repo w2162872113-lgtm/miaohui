@@ -20,6 +20,8 @@ interface RuntimeHostOptions<TState> {
   onTrace?: (step: TraceStepInput) => void
   /** 每轮 provider 调用前取当前启用的经验卡片，注入 ProviderInput */
   getMemoryCards?: () => MemoryCardBrief[]
+  /** 每轮 provider 调用前取最新的企业知识库全文（设置里改了即时生效） */
+  getKnowledge?: () => string
   /** 会话结束（含内部错误停止）时回调，用于收尾轨迹会话 */
   onSessionEnd?: () => void
 }
@@ -104,7 +106,12 @@ export class RuntimeHost<TState> {
   private runProviderWithMemory(input: ProviderInput): AsyncIterable<ProviderEvent> {
     const cards = this.options.getMemoryCards?.() ?? []
     this.lastInjectedCardIds = cards.map((card) => card.cardId)
-    return this.options.provider.run(cards.length ? { ...input, memoryCards: cards } : input)
+    const knowledge = this.options.getKnowledge?.()?.trim()
+    return this.options.provider.run({
+      ...input,
+      ...(cards.length ? { memoryCards: cards } : {}),
+      ...(knowledge ? { knowledge } : {})
+    })
   }
 
   private trace(step: TraceStepInput): void {

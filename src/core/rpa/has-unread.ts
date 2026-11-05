@@ -327,3 +327,168 @@ async function analyzeRedPixelEdge(
     return null
   }
 }
+
+// ── 在会话列表中定位"真正带红点"的那一行 ──
+//
+// 旧逻辑固定点击会话列表第一行，当未读会话不在第一行（例如上面有置顶会话）时，
+// 会打开错误的会话并把回复发给错误的人。这里改为：沿头像列向下扫描整个会话列表，
+// 找到最上面一个"头像右上角红点"，返回那一行的屏幕坐标。
+
+export interface UnreadContactLocation {
+  /** 该行头像中心的屏幕坐标（macOS 逻辑像素 / Windows 物理像素，与点击坐标系一致） */
+  coordinates: [number, number]
+  /** 红点中心相对窗口顶部的 y（逻辑像素），用于点击后复核 */
+  badgeWindowY: number
+}
+
+const IS_WINDOWS_PLATFORM = process.platform === 'win32'
+
+function isRedPixel(r: number, g: number, b: number, a: number): boolean {
+  return a > 128 && r > 150 && r > g * 1.5 && r > b * 1.5
+}
+
+/**
+ * 扫描会话列表头像列，返回所有红点（按从上到下排序），坐标为相对窗口的逻辑像素 y。
+ */
+async function scanContactListBadges(
+  aiClient: AIClient,
+  appType: AppType
+): Promise<{
+  badges: number[]
+  avatar: { x: number; y: number; width: number; height: number }
+  windowBounds: { x: number; y: number; width: number; height: number }
+  scaleFactor: number
+  firstContactCoords: [number, number]
+} | null> {
+  const unreadArea = await getUnreadArea(aiClient, appType)
+  if (!unreadArea.firstContact?.bbox) return null
+
+  const windowInfo = await getWindowInfo(appType, false)
+  if (!windowInfo?.bounds) return null
+  const windowBounds = windowInfo.bounds
+  const scaleFactor = windowInfo.scaleFactor || 1
+
+  const avatar = bboxToCropBounds(unreadArea.firstContact.bbox, windowBounds)
+  avatar.width = avatar.height // 头像是正方形
+
+  // 竖条：覆盖头像右半边 + 角标溢出部分，从第一行头像上方一点一直到窗口底部
+  const strip = {
+    x: avatar.x + avatar.width * 0.45,
+    y: Math.max(0, avatar.y - avatar.height * 0.5),
+    width: avatar.width * 0.85,
+    height: 0
+  }
+  strip.height = windowBounds.height - strip.y - 4
+  if (strip.height <= avatar.height) return null
+
+  const shot = await captureWechatWindow(appType, strip)
+  if (!shot.success || !shot.screenshotBase64) return null
+
+  const { Jimp, intToRGBA } = await import('jimp')
+  const pngBuffer = Buffer.from(
+    shot.screenshotBase64.replace(/^data:image\/\w+;base64,/, ''),
+    'base64'
+  )
+  const image = await Jimp.read(pngBuffer)
+  const { width, height } = image.bitmap
+  const pxPerPt = height / strip.height
+
+  // 每一行像素里的红色像素数
+  const rowRed: number[] = new Array(height).fill(0)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const { r, g, b, a } = intToRGBA(image.getPixelColor(x, y))
+      if (isRedPixel(r, g, b, a)) rowRed[y]++
+    }
+  }
+
+  // 连续的"红色行"聚成一个候选红点
+  const minRowRed = Math.max(2, Math.round(2 * pxPerPt))
+  const minBadgeH = 6 * pxPerPt // 红点至少 ~6pt 高
+  const maxBadgeH = avatar.height * 0.75 * pxPerPt // 比头像小得多；更大的红色块多半是头像图案
+  const badges: number[] = []
+  let start = -1
+  for (let y = 0; y <= height; y++) {
+    const isRedRow = y < height && rowRed[y] >= minRowRed
+    if (isRedRow && start < 0) start = y
+    if (!isRedRow && start >= 0) {
+      const h = y - start
+      if (h >= minBadgeH && h <= maxBadgeH) {
+        const centerPx = (start + y) / 2
+        badges.push(strip.y + centerPx / pxPerPt)
+      }
+      start = -1
+    }
+  }
+
+  return {
+    badges,
+    avatar,
+    windowBounds,
+    scaleFactor,
+    firstContactCoords: unreadArea.firstContact.coordinates
+  }
+}
+
+/**
+ * 找到会话列表中最上面一个带未读红点的会话。
+ * 找不到返回 null（例如未读消息就在当前打开的会话里，列表里不显示红点）。
+ */
+export async function findUnreadContactInList(
+  aiClient: AIClient,
+  appType: AppType
+): Promise<UnreadContactLocation | null> {
+  try {
+    const scan = await scanContactListBadges(aiClient, appType)
+    if (!scan) {
+      console.warn('[HasUnread] 会话列表扫描失败')
+      return null
+    }
+    console.log('[HasUnread] 会话列表红点扫描:', {
+      badgeYs: scan.badges.map((y) => Math.round(y)),
+      avatarH: Math.round(scan.avatar.height),
+      avatar: scan.avatar
+    })
+    if (scan.badges.length === 0) return null
+
+    const badgeY = scan.badges[0]
+    // 红点在头像右上角：头像中心大约在红点下方 0.35 个头像高度
+    const rowCenterWindowY = badgeY + scan.avatar.height * 0.35
+    const logicalY = scan.windowBounds.y + rowCenterWindowY
+    const logicalX = scan.firstContactCoords[0] / (IS_WINDOWS_PLATFORM ? scan.scaleFactor : 1)
+
+    const coordinates: [number, number] = IS_WINDOWS_PLATFORM
+      ? [Math.round(logicalX * scan.scaleFactor), Math.round(logicalY * scan.scaleFactor)]
+      : [Math.round(logicalX), Math.round(logicalY)]
+
+    return { coordinates, badgeWindowY: badgeY }
+  } catch (error) {
+    console.error('[HasUnread] findUnreadContactInList 失败:', error)
+    return null
+  }
+}
+
+/**
+ * 点击会话后复核：原来那个红点是否已经消失（= 这个会话确实被打开了）。
+ */
+export async function isContactBadgeCleared(
+  aiClient: AIClient,
+  appType: AppType,
+  badgeWindowY: number
+): Promise<boolean> {
+  try {
+    const scan = await scanContactListBadges(aiClient, appType)
+    if (!scan) return false
+    const tolerance = scan.avatar.height * 0.5
+    const stillThere = scan.badges.some((y) => Math.abs(y - badgeWindowY) < tolerance)
+    console.log('[HasUnread] 点击后复核红点:', {
+      target: Math.round(badgeWindowY),
+      badgeYs: scan.badges.map((y) => Math.round(y)),
+      cleared: !stillThere
+    })
+    return !stillThere
+  } catch (error) {
+    console.error('[HasUnread] isContactBadgeCleared 失败:', error)
+    return false
+  }
+}

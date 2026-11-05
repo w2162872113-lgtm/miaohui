@@ -11,11 +11,13 @@
 
 import { AppType } from './rpa/types'
 import { BBox } from './rpa/vision-utils'
+import { ChatIdentity } from './reply-rules'
 
 export interface DesktopDevice {
   // ── 配置 ──
   setAppType(appType: AppType): void
-  setApiKey(apiKey: string): void
+  /** model 为空时用默认模型 */
+  setApiKey(apiKey: string, model?: string): void
 
   // ── 生命周期 ──
   // session 启停时由 GenericChannelSession 调用，给设备机会做缓存初始化 / 清理。
@@ -52,6 +54,21 @@ export interface DesktopDevice {
     isUnread: boolean
     firstContactCoords?: [number, number]
   }>
+
+  /**
+   * 在会话列表里找到真正带未读红点的那一行（而不是固定点第一行）。
+   * 未实现的设备回退到 isChatContactUnread 旧逻辑。
+   */
+  findUnreadContact?(): Promise<{ coordinates: [number, number]; badgeWindowY: number } | null>
+
+  /** 目标窗口是否被别的程序挡住（挡住时截图/点击都会落到别的程序上） */
+  checkObstruction?(): Promise<{ obstructed: boolean; by?: string; missing?: boolean }>
+
+  /** 读取当前会话标题栏，识别会话名称和是否群聊；识别失败返回 null */
+  identifyChat?(): Promise<ChatIdentity | null>
+
+  /** 点击会话后复核：该行红点是否已消失（= 确实打开了这个会话） */
+  isContactBadgeCleared?(badgeWindowY: number): Promise<boolean>
 
   /**
    * 清除未读区域的坐标缓存（chatEntranceArea + firstContact）。
